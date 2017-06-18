@@ -397,8 +397,8 @@ func (c *conn) Post(cmd string, args ...interface{}) (interface{}, error) {
 func NewConn(netConn net.Conn, do *dialOptions) (Conn, error) {
 	return &conn{
 		conn:         netConn,
-		bw:           bufio.NewWriter(netConn),
-		br:           bufio.NewReader(netConn),
+		bw:           bufio.NewWriterSize(netConn, do.bwSize),
+		br:           bufio.NewReaderSize(netConn, do.brSize),
 		readTimeout:  do.readTimeout,
 		writeTimeout: do.writeTimeout,
 	}, nil

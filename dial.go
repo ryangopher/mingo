@@ -18,7 +18,10 @@ func DialTimeout(network, address string, connectTimeout, readTimeout, writeTime
 		dw,
 		DialConnectTimeout(connectTimeout),
 		DialReadTimeout(readTimeout),
-		DialWriteTimeout(writeTimeout))
+		DialReadBufferSize(4096),
+		DialWriteTimeout(writeTimeout),
+		DialWriteBufferSize(4096),
+	)
 }
 
 // DialOption specifies an option for dialing a mingo server.
@@ -28,7 +31,9 @@ type DialOption struct {
 
 type dialOptions struct {
 	readTimeout  time.Duration
+	brSize       int
 	writeTimeout time.Duration
+	bwSize       int
 	dial         func(network, addr string) (net.Conn, error)
 	dialTLS      bool
 	skipVerify   bool
@@ -42,10 +47,24 @@ func DialReadTimeout(d time.Duration) DialOption {
 	}}
 }
 
+// DialReadBufferSize specifies the timeout for read buffer.
+func DialReadBufferSize(size int) DialOption {
+	return DialOption{func(do *dialOptions) {
+		do.brSize = size
+	}}
+}
+
 // DialWriteTimeout specifies the timeout for writing a single command.
 func DialWriteTimeout(d time.Duration) DialOption {
 	return DialOption{func(do *dialOptions) {
 		do.writeTimeout = d
+	}}
+}
+
+// DialWriteBufferSize specifies the size for write buffer.
+func DialWriteBufferSize(size int) DialOption {
+	return DialOption{func(do *dialOptions) {
+		do.bwSize = size
 	}}
 }
 
