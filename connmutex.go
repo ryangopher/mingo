@@ -122,6 +122,8 @@ func (c *muxConn) Receive() (interface{}, error) {
 	return v, err
 }
 
+func (c *muxConn) MarkClose() {}
+
 func (c *muxConn) Close() error {
 	var err error
 	if len(c.ids) == 0 {

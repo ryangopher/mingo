@@ -34,6 +34,8 @@ type loggingConn struct {
 	prefix string
 }
 
+func (c *loggingConn) MarkClose() {}
+
 func (c *loggingConn) Close() error {
 	err := c.Conn.Close()
 	var buf bytes.Buffer

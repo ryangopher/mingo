@@ -341,6 +341,10 @@ func initSentinel() {
 	}
 }
 
+func (pc *pooledConnection) MarkClose() {
+	pc.state = -1
+}
+
 func (pc *pooledConnection) Close() error {
 	c := pc.c
 	if _, ok := c.(errorConnection); ok {
@@ -377,6 +381,7 @@ type errorConnection struct{ err error }
 func (ec errorConnection) Post(string, ...interface{}) (interface{}, error) { return nil, ec.err }
 func (ec errorConnection) Send(string, ...interface{}) error                { return ec.err }
 func (ec errorConnection) Err() error                                       { return ec.err }
+func (ec errorConnection) MarkClose()                                       { return }
 func (ec errorConnection) Close() error                                     { return ec.err }
 func (ec errorConnection) Flush() error                                     { return ec.err }
 func (ec errorConnection) Receive() (interface{}, error)                    { return nil, ec.err }

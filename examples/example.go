@@ -1,9 +1,9 @@
 package main
 
 import (
+	"github.com/mingo"
 	"log"
 	"time"
-	"github.com/mingo"
 )
 
 func main() {

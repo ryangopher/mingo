@@ -51,6 +51,8 @@ type conn struct {
 	numScratch [40]byte
 }
 
+func (c *conn) MarkClose() {}
+
 func (c *conn) Close() error {
 	c.mu.Lock()
 	err := c.err

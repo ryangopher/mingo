@@ -7,6 +7,9 @@ func (err Error) Error() string { return string(err) }
 
 // Conn represents a connection to server.
 type Conn interface {
+	// mark conn to force close later
+	MarkClose()
+
 	// Close closes the connection.
 	Close() error
 
