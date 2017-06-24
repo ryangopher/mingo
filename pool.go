@@ -136,12 +136,15 @@ type Pool struct {
 	// the timeout to a value less than the server's timeout.
 	IdleTimeout time.Duration
 
+	// check idle conn and release timeout idle connections
+	GCInterval time.Duration
+
 	// If Wait is true and the pool is at the MaxActive limit, then Get() waits
 	// for a connection to be returned to the pool before returning.
 	Wait bool
 
 	// mark pool initialized
-	init bool
+	initialized bool
 
 	// mark previous clean time
 	nextGCTime time.Time
@@ -223,16 +226,17 @@ func (p *Pool) release() {
 func (p *Pool) get() (Conn, error) {
 	p.mu.Lock()
 
-	if !p.init {
-		p.nextGCTime = nowFunc().Add(p.IdleTimeout)
-		p.init = true
+	if !p.initialized {
+		p.initialized = true
+		p.nextGCTime = nowFunc().Add(p.GCInterval)
+		log.Printf("mingo : nextgctime %s", p.nextGCTime)
 	}
 
 	// Prune stale connections.
 	// 不要频繁的去处理idle conn
 	if timeout := p.IdleTimeout; (timeout > 0) && (nowFunc().After(p.nextGCTime)) {
-		p.nextGCTime = nowFunc().Add(p.IdleTimeout)
-		log.Printf("mingo pool : nextgctime %s", p.nextGCTime)
+		p.nextGCTime = nowFunc().Add(p.GCInterval)
+		log.Printf("mingo : nextgctime %s", p.nextGCTime)
 
 		//每次只处理一半的idle conn
 		for i, n := 0, p.idle.Len(); i < int(float32(n)*0.5); i++ {
