@@ -1,5 +1,9 @@
 package mingo
 
+import (
+	"time"
+)
+
 // Error represents an error returned in a command reply.
 type Error string
 
@@ -7,8 +11,11 @@ func (err Error) Error() string { return string(err) }
 
 // Conn represents a connection to server.
 type Conn interface {
-	// mark conn to force close later
-	MarkClose()
+	// MarkIdleTime mark time becoming idle.
+	MarkIdleTime()
+
+	// GetIdleTime get time becoming idle.
+	GetIdleTime() time.Time
 
 	// Close closes the connection.
 	Close() error
@@ -27,4 +34,12 @@ type Conn interface {
 
 	// Receive receives a single reply from the server
 	Receive() (reply interface{}, err error)
+}
+
+// Scanner is implemented by types which want to control how their value is
+// interpreted when read from server.
+type Scanner interface {
+	// An error should be returned if the value cannot be stored without
+	// loss of information.
+	RedisScan(src interface{}) error
 }

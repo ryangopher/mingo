@@ -17,6 +17,7 @@ package mingo
 import (
 	"errors"
 	"sync"
+	"time"
 )
 
 // ConnMux multiplexes one or more connections to a single underlying
@@ -51,9 +52,10 @@ func (p *ConnMux) Close() error {
 }
 
 type muxConn struct {
-	p   *ConnMux
-	ids []uint
-	buf [8]uint
+	p        *ConnMux
+	ids      []uint
+	buf      [8]uint
+	idleTime time.Time
 }
 
 func (c *muxConn) send(flush bool, cmd string, args ...interface{}) error {
@@ -122,8 +124,6 @@ func (c *muxConn) Receive() (interface{}, error) {
 	return v, err
 }
 
-func (c *muxConn) MarkClose() {}
-
 func (c *muxConn) Close() error {
 	var err error
 	if len(c.ids) == 0 {
@@ -145,4 +145,14 @@ func (c *muxConn) Post(cmd string, args ...interface{}) (interface{}, error) {
 
 func (c *muxConn) Err() error {
 	return c.p.c.Err()
+}
+
+// MarkIdleTime mark time becoming idle.
+func (c *muxConn) MarkIdleTime() {
+	c.idleTime = time.Now()
+}
+
+// GetIdleTime get time becoming idle.
+func (c *muxConn) GetIdleTime() time.Time {
+	return c.idleTime
 }

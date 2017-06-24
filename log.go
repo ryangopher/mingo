@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"time"
 )
 
 // NewLoggingConn returns a logging wrapper around a connection.
@@ -25,16 +26,15 @@ func NewLoggingConn(conn Conn, logger *log.Logger, prefix string) Conn {
 	if prefix != "" {
 		prefix = prefix + "."
 	}
-	return &loggingConn{conn, logger, prefix}
+	return &loggingConn{Conn: conn, logger: logger, prefix: prefix}
 }
 
 type loggingConn struct {
 	Conn
-	logger *log.Logger
-	prefix string
+	logger   *log.Logger
+	prefix   string
+	idleTime time.Time
 }
-
-func (c *loggingConn) MarkClose() {}
 
 func (c *loggingConn) Close() error {
 	err := c.Conn.Close()
@@ -116,4 +116,14 @@ func (c *loggingConn) Receive() (interface{}, error) {
 	reply, err := c.Conn.Receive()
 	c.debug("Receive", "", nil, reply, err)
 	return reply, err
+}
+
+// MarkIdleTime mark time becoming idle.
+func (c *loggingConn) MarkIdleTime() {
+	c.idleTime = time.Now()
+}
+
+// GetIdleTime get time becoming idle.
+func (c *loggingConn) GetIdleTime() time.Time {
+	return c.idleTime
 }

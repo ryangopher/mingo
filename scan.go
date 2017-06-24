@@ -110,6 +110,25 @@ func convertAssignInt(d reflect.Value, s int64) (err error) {
 }
 
 func convertAssignValue(d reflect.Value, s interface{}) (err error) {
+	if d.Kind() != reflect.Ptr {
+		if d.CanAddr() {
+			d2 := d.Addr()
+			if d2.CanInterface() {
+				if scanner, ok := d2.Interface().(Scanner); ok {
+					return scanner.RedisScan(s)
+				}
+			}
+		}
+	} else if d.CanInterface() {
+		// Already a reflect.Ptr
+		if d.IsNil() {
+			d.Set(reflect.New(d.Type().Elem()))
+		}
+		if scanner, ok := d.Interface().(Scanner); ok {
+			return scanner.RedisScan(s)
+		}
+	}
+
 	switch s := s.(type) {
 	case []byte:
 		err = convertAssignBulkString(d, s)
@@ -135,11 +154,15 @@ func convertAssignArray(d reflect.Value, s []interface{}) error {
 }
 
 func convertAssign(d interface{}, s interface{}) (err error) {
+	if scanner, ok := d.(Scanner); ok {
+		return scanner.RedisScan(s)
+	}
+
 	// Handle the most common destination types using type switches and
 	// fall back to reflection for all other types.
 	switch s := s.(type) {
 	case nil:
-		// ingore
+		// ignore
 	case []byte:
 		switch d := d.(type) {
 		case *string:
