@@ -84,8 +84,8 @@ func (c *conn) writeBytes(p []byte) error {
 	return err
 }
 
-func (c *conn) writeCommand(cmd string, args []interface{}) error {
-	return c.writeString(cmd)
+func (c *conn) writeCommand(cmd []byte, args []interface{}) error {
+	return c.writeBytes(cmd)
 }
 
 type protocolError string
@@ -125,7 +125,7 @@ func (c *conn) readReply() (interface{}, error) {
 	return nil, protocolError("unexpected response line")
 }
 
-func (c *conn) Send(cmd string, args ...interface{}) error {
+func (c *conn) Send(cmd []byte, args ...interface{}) error {
 	if c.writeTimeout != 0 {
 		c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 	}
@@ -169,8 +169,8 @@ func (c *conn) Receive() (reply interface{}, err error) {
 	return
 }
 
-func (c *conn) Post(cmd string, args ...interface{}) (interface{}, error) {
-	if cmd == "" {
+func (c *conn) Post(cmd []byte, args ...interface{}) (interface{}, error) {
+	if len(cmd) == 0 {
 		return nil, nil
 	}
 

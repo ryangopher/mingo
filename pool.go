@@ -314,6 +314,10 @@ func (p *Pool) get() (Conn, error) {
 
 // Put put back conn to pool
 func (p *Pool) Put(c Conn, forceClose bool) error {
+	if c == nil {
+		return nil
+	}
+
 	if _, ok := c.(errorConnection); ok {
 		return nil
 	}
@@ -352,8 +356,8 @@ type errorConnection struct {
 	idleTime time.Time
 }
 
-func (ec errorConnection) Post(string, ...interface{}) (interface{}, error) { return nil, ec.err }
-func (ec errorConnection) Send(string, ...interface{}) error                { return ec.err }
+func (ec errorConnection) Post([]byte, ...interface{}) (interface{}, error) { return nil, ec.err }
+func (ec errorConnection) Send([]byte, ...interface{}) error                { return ec.err }
 func (ec errorConnection) Err() error                                       { return ec.err }
 func (ec errorConnection) Close() error                                     { return ec.err }
 func (ec errorConnection) Flush() error                                     { return ec.err }

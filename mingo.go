@@ -24,10 +24,10 @@ type Conn interface {
 	Err() error
 
 	// Post a command to the server and returns the received response.
-	Post(request string, args ...interface{}) (response interface{}, err error)
+	Post(request []byte, args ...interface{}) (response interface{}, err error)
 
 	// Send writes the command to the client's output buffer.
-	Send(command string, args ...interface{}) error
+	Send(command []byte, args ...interface{}) error
 
 	// Flush flushes the output buffer to the server.
 	Flush() error

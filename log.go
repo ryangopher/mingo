@@ -81,11 +81,11 @@ func (c *loggingConn) printValue(buf *bytes.Buffer, v interface{}) {
 	}
 }
 
-func (c *loggingConn) debug(method, commandName string, args []interface{}, reply interface{}, err error) {
+func (c *loggingConn) debug(method string, commandName []byte, args []interface{}, reply interface{}, err error) {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "%s%s(", c.prefix, method)
 	if method != "Receive" {
-		buf.WriteString(commandName)
+		buf.Write(commandName)
 		for _, arg := range args {
 			buf.WriteString(", ")
 			c.printValue(&buf, arg)
@@ -100,13 +100,13 @@ func (c *loggingConn) debug(method, commandName string, args []interface{}, repl
 	c.logger.Output(3, buf.String())
 }
 
-func (c *loggingConn) Post(command string, args ...interface{}) (interface{}, error) {
+func (c *loggingConn) Post(command []byte, args ...interface{}) (interface{}, error) {
 	response, err := c.Conn.Post(command, args...)
 	c.debug("Do", command, args, response, err)
 	return response, err
 }
 
-func (c *loggingConn) Send(command string, args ...interface{}) error {
+func (c *loggingConn) Send(command []byte, args ...interface{}) error {
 	err := c.Conn.Send(command, args...)
 	c.debug("Send", command, args, nil, err)
 	return err
@@ -114,7 +114,7 @@ func (c *loggingConn) Send(command string, args ...interface{}) error {
 
 func (c *loggingConn) Receive() (interface{}, error) {
 	reply, err := c.Conn.Receive()
-	c.debug("Receive", "", nil, reply, err)
+	c.debug("Receive", []byte(""), nil, reply, err)
 	return reply, err
 }
 

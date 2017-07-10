@@ -58,7 +58,7 @@ type muxConn struct {
 	idleTime time.Time
 }
 
-func (c *muxConn) send(flush bool, cmd string, args ...interface{}) error {
+func (c *muxConn) send(flush bool, cmd []byte, args ...interface{}) error {
 	p := c.p
 	p.sendMu.Lock()
 	id := p.sendID
@@ -72,7 +72,7 @@ func (c *muxConn) send(flush bool, cmd string, args ...interface{}) error {
 	return err
 }
 
-func (c *muxConn) Send(cmd string, args ...interface{}) error {
+func (c *muxConn) Send(cmd []byte, args ...interface{}) error {
 	return c.send(false, cmd, args...)
 }
 
@@ -136,7 +136,7 @@ func (c *muxConn) Close() error {
 	return err
 }
 
-func (c *muxConn) Post(cmd string, args ...interface{}) (interface{}, error) {
+func (c *muxConn) Post(cmd []byte, args ...interface{}) (interface{}, error) {
 	if err := c.send(true, cmd, args...); err != nil {
 		return nil, err
 	}
