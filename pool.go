@@ -15,10 +15,9 @@
 package mingo
 
 import (
-	"container/list"
 	"errors"
-	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,11 +28,6 @@ var nowFunc = time.Now // for testing
 // pool has been reached.
 var ErrPoolExhausted = errors.New("mingo: connection pool exhausted")
 
-var (
-	errPoolClosed = errors.New("mingo: connection pool closed")
-	errConnClosed = errors.New("mingo: connection closed")
-)
-
 // Pool maintains a pool of connections. The application calls the Get method
 // to get a connection from the pool and the connection's Close method to
 // return the connection's resources to the pool.
@@ -43,22 +37,22 @@ var (
 // request handlers using a package level variable. The pool configuration used
 // here is an example, not a recommendation.
 //
-//  func newPool(addr string) *mingo.Pool {
-//    return &mingo.Pool{
+//  func newPool(addr string) *redis.Pool {
+//    return &redis.Pool{
 //      MaxIdle: 3,
 //      IdleTimeout: 240 * time.Second,
-//      Dial: func () (mingo.Conn, error) { return mingo.Dial("tcp", addr) },
+//      Dial: func () (redis.Conn, error) { return redis.Dial("tcp", addr) },
 //    }
 //  }
 //
 //  var (
-//    pool *mingo.Pool
-//    mingoServer = flag.String("mingoServer", ":6379", "")
+//    pool *redis.Pool
+//    redisServer = flag.String("redisServer", ":6379", "")
 //  )
 //
 //  func main() {
 //    flag.Parse()
-//    pool = newPool(*mingoServer)
+//    pool = newPool(*redisServer)
 //    ...
 //  }
 //
@@ -74,10 +68,10 @@ var (
 // Use the Dial function to authenticate connections with the AUTH command or
 // select a database with the SELECT command:
 //
-//  pool := &mingo.Pool{
+//  pool := &redis.Pool{
 //    // Other pool configuration not shown in this example.
-//    Dial: func () (mingo.Conn, error) {
-//      c, err := mingo.Dial("tcp", server)
+//    Dial: func () (redis.Conn, error) {
+//      c, err := redis.Dial("tcp", server)
 //      if err != nil {
 //        return nil, err
 //      }
@@ -90,16 +84,16 @@ var (
 //        return nil, err
 //      }
 //      return c, nil
-//    }
+//    },
 //  }
 //
 // Use the TestOnBorrow function to check the health of an idle connection
 // before the connection is returned to the application. This example PINGs
 // connections that have been idle more than a minute:
 //
-//  pool := &mingo.Pool{
+//  pool := &redis.Pool{
 //    // Other pool configuration not shown in this example.
-//    TestOnBorrow: func(c mingo.Conn, t time.Time) error {
+//    TestOnBorrow: func(c redis.Conn, t time.Time) error {
 //      if time.Since(t) < time.Minute {
 //        return nil
 //      }
@@ -109,7 +103,6 @@ var (
 //  }
 //
 type Pool struct {
-
 	// Dial is an application supplied function for creating and configuring a
 	// connection.
 	//
@@ -136,34 +129,21 @@ type Pool struct {
 	// the timeout to a value less than the server's timeout.
 	IdleTimeout time.Duration
 
-	// check idle conn and release timeout idle connections
-	GCInterval time.Duration
-
 	// If Wait is true and the pool is at the MaxActive limit, then Get() waits
 	// for a connection to be returned to the pool before returning.
 	Wait bool
 
-	// mark pool initialized
-	initialized bool
+	// Close connections older than this duration. If the value is zero, then
+	// the pool does not close connections based on age.
+	MaxConnLifetime time.Duration
 
-	// mark previous clean time
-	nextGCTime time.Time
+	chInitialized uint32 // set to 1 when field ch is initialized
 
-	// mu protects fields defined below.
-	mu     sync.Mutex
-	cond   *sync.Cond
-	closed bool
-	active int
-
-	// Stack of idleConn with most recently used at the front.
-	idle list.List
-}
-
-// NewPool creates a new pool.
-//
-// Deprecated: Initialize the Pool directory as shown in the example.
-func NewPool(newFn func() (Conn, error), maxIdle int) *Pool {
-	return &Pool{Dial: newFn, MaxIdle: maxIdle, nextGCTime: nowFunc()}
+	mu     sync.Mutex    // mu protects the following fields
+	closed bool          // set to true when the pool is closed.
+	active int           // the number of open connections in the pool
+	ch     chan struct{} // limits open connections when p.Wait is true
+	idle   idleList      // idle connections
 }
 
 // Get gets a connection. The application must close the returned connection.
@@ -172,14 +152,36 @@ func NewPool(newFn func() (Conn, error), maxIdle int) *Pool {
 // getting an underlying connection, then the connection Err, Do, Send, Flush
 // and Receive methods return that error.
 func (p *Pool) Get() Conn {
-	c, err := p.get()
+	pc, err := p.get(nil)
 	if err != nil {
-		return errorConnection{err: err}
+		return errorConn{err}
 	}
-	return c
+	return pc
 }
 
-// ActiveCount returns the number of active connections in the pool.
+// PoolStats contains pool statistics.
+type PoolStats struct {
+	// ActiveCount is the number of connections in the pool. The count includes
+	// idle connections and connections in use.
+	ActiveCount int
+	// IdleCount is the number of idle connections in the pool.
+	IdleCount int
+}
+
+// Stats returns pool's statistics.
+func (p *Pool) Stats() PoolStats {
+	p.mu.Lock()
+	stats := PoolStats{
+		ActiveCount: p.active,
+		IdleCount:   p.idle.count,
+	}
+	p.mu.Unlock()
+
+	return stats
+}
+
+// ActiveCount returns the number of connections in the pool. The count
+// includes idle connections and connections in use.
 func (p *Pool) ActiveCount() int {
 	p.mu.Lock()
 	active := p.active
@@ -190,7 +192,7 @@ func (p *Pool) ActiveCount() int {
 // IdleCount returns the number of idle connections in the pool.
 func (p *Pool) IdleCount() int {
 	p.mu.Lock()
-	idle := p.idle.Len()
+	idle := p.idle.count
 	p.mu.Unlock()
 	return idle
 }
@@ -198,169 +200,216 @@ func (p *Pool) IdleCount() int {
 // Close releases the resources used by the pool.
 func (p *Pool) Close() error {
 	p.mu.Lock()
-	idle := p.idle
-	p.idle.Init()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
 	p.closed = true
-	p.active -= idle.Len()
-	if p.cond != nil {
-		p.cond.Broadcast()
+	p.active -= p.idle.count
+	pc := p.idle.front
+	p.idle.count = 0
+	p.idle.front, p.idle.back = nil, nil
+	if p.ch != nil {
+		close(p.ch)
 	}
 	p.mu.Unlock()
-	for e := idle.Front(); e != nil; e = e.Next() {
-		e.Value.(Conn).Close()
+	for ; pc != nil; pc = pc.next {
+		pc.c.Close()
 	}
 	return nil
 }
 
-// release decrements the active count and signals waiters. The caller must
-// hold p.mu during the call.
-func (p *Pool) release() {
-	p.active--
-	if p.cond != nil {
-		p.cond.Signal()
+func (p *Pool) lazyInit() {
+	// Fast path.
+	if atomic.LoadUint32(&p.chInitialized) == 1 {
+		return
 	}
+	// Slow path.
+	p.mu.Lock()
+	if p.chInitialized == 0 {
+		p.ch = make(chan struct{}, p.MaxActive)
+		if p.closed {
+			close(p.ch)
+		} else {
+			for i := 0; i < p.MaxActive; i++ {
+				p.ch <- struct{}{}
+			}
+		}
+		atomic.StoreUint32(&p.chInitialized, 1)
+	}
+	p.mu.Unlock()
 }
 
 // get prunes stale connections and returns a connection from the idle list or
 // creates a new connection.
-func (p *Pool) get() (Conn, error) {
+func (p *Pool) get(ctx interface {
+	Done() <-chan struct{}
+	Err() error
+}) (*poolConn, error) {
+
+	// Handle limit for p.Wait == true.
+	if p.Wait && p.MaxActive > 0 {
+		p.lazyInit()
+		if ctx == nil {
+			<-p.ch
+		} else {
+			select {
+			case <-p.ch:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+
 	p.mu.Lock()
 
-	if !p.initialized {
-		p.initialized = true
-		p.nextGCTime = nowFunc().Add(p.GCInterval)
-		log.Printf("mingo : nextgctime %s", p.nextGCTime)
-	}
-
-	// Prune stale connections.
-	// 不要频繁的去处理idle conn
-	if timeout := p.IdleTimeout; (timeout > 0) && (nowFunc().After(p.nextGCTime)) {
-		p.nextGCTime = nowFunc().Add(p.GCInterval)
-		log.Printf("mingo : nextgctime %s", p.nextGCTime)
-
-		//每次只处理一半的idle conn
-		for i, n := 0, p.idle.Len(); i < int(float32(n)*0.5); i++ {
-			e := p.idle.Back()
-			if e == nil {
-				break
-			}
-			c := e.Value.(Conn)
-			if c.GetIdleTime().Add(timeout).After(nowFunc()) {
-				break
-			}
-			p.idle.Remove(e)
-			p.release()
+	// Prune stale connections at the back of the idle list.
+	if p.IdleTimeout > 0 {
+		n := p.idle.count
+		for i := 0; i < n && p.idle.back != nil && p.idle.back.t.Add(p.IdleTimeout).Before(nowFunc()); i++ {
+			pc := p.idle.back
+			p.idle.popBack()
 			p.mu.Unlock()
-			c.Close()
+			pc.c.Close()
 			p.mu.Lock()
+			p.active--
 		}
 	}
 
-	for {
-
-		// Get idle connection.
-
-		for i, n := 0, p.idle.Len(); i < n; i++ {
-			e := p.idle.Front()
-			if e == nil {
-				break
-			}
-			c := e.Value.(Conn)
-			p.idle.Remove(e)
-			test := p.TestOnBorrow
-			p.mu.Unlock()
-			if test == nil || test(c, c.GetIdleTime()) == nil {
-				return c, nil
-			}
-			c.Close()
-			p.mu.Lock()
-			p.release()
+	// Get idle connection from the front of idle list.
+	for p.idle.front != nil {
+		pc := p.idle.front
+		p.idle.popFront()
+		p.mu.Unlock()
+		if (p.TestOnBorrow == nil || p.TestOnBorrow(pc.c, pc.t) == nil) &&
+			(p.MaxConnLifetime == 0 || nowFunc().Sub(pc.created) < p.MaxConnLifetime) {
+			return pc, nil
 		}
-
-		// Check for pool closed before dialing a new connection.
-
-		if p.closed {
-			p.mu.Unlock()
-			return nil, errors.New("mingo: get on closed pool")
-		}
-
-		// Dial new connection if under limit.
-
-		if p.MaxActive == 0 || p.active < p.MaxActive {
-			dial := p.Dial
-			p.active++
-			p.mu.Unlock()
-			c, err := dial()
-			if err != nil {
-				p.mu.Lock()
-				p.release()
-				p.mu.Unlock()
-				c = nil
-			}
-			return c, err
-		}
-
-		if !p.Wait {
-			p.mu.Unlock()
-			return nil, ErrPoolExhausted
-		}
-
-		if p.cond == nil {
-			p.cond = sync.NewCond(&p.mu)
-		}
-		p.cond.Wait()
+		pc.c.Close()
+		p.mu.Lock()
+		p.active--
 	}
+
+	// Check for pool closed before dialing a new connection.
+	if p.closed {
+		p.mu.Unlock()
+		return nil, errors.New("mingo: get on closed pool")
+	}
+
+	// Handle limit for p.Wait == false.
+	if !p.Wait && p.MaxActive > 0 && p.active >= p.MaxActive {
+		p.mu.Unlock()
+		return nil, ErrPoolExhausted
+	}
+
+	p.active++
+	p.mu.Unlock()
+	c, err := p.Dial()
+	if err != nil {
+		c = nil
+		p.mu.Lock()
+		p.active--
+		if p.ch != nil && !p.closed {
+			p.ch <- struct{}{}
+		}
+		p.mu.Unlock()
+	}
+	return &poolConn{c: c, p: p, created: nowFunc()}, err
+}
+
+func (p *Pool) put(pc *poolConn, forceClose bool) error {
+	p.mu.Lock()
+	if !p.closed && !forceClose {
+		pc.t = nowFunc()
+		p.idle.pushFront(pc)
+		if p.idle.count > p.MaxIdle {
+			pc = p.idle.back
+			p.idle.popBack()
+		} else {
+			pc = nil
+		}
+	}
+
+	if pc != nil {
+		p.mu.Unlock()
+		pc.c.Close()
+		p.mu.Lock()
+		p.active--
+	}
+
+	if p.ch != nil && !p.closed {
+		p.ch <- struct{}{}
+	}
+	p.mu.Unlock()
+	return nil
+}
+
+type poolConn struct {
+	c          Conn
+	t          time.Time
+	p          *Pool
+	created    time.Time
+	next, prev *poolConn
 }
 
 // Put put back conn to pool
-func (p *Pool) Put(c Conn, forceClose bool) error {
-	if c == nil {
-		return nil
-	}
-
-	if _, ok := c.(errorConnection); ok {
-		return nil
-	}
-
-	return p.put(c, forceClose)
+func (pc *poolConn) Close() error {
+	return pc.p.put(pc, pc.Err() != nil)
 }
 
-func (p *Pool) put(c Conn, forceClose bool) error {
-	err := c.Err()
-	p.mu.Lock()
-	if !p.closed && err == nil && !forceClose {
-		c.MarkIdleTime()
-		p.idle.PushFront(c)
-		if p.idle.Len() > p.MaxIdle {
-			c = p.idle.Remove(p.idle.Back()).(Conn)
-		} else {
-			c = nil
-		}
-	}
-
-	if c == nil {
-		if p.cond != nil {
-			p.cond.Signal()
-		}
-		p.mu.Unlock()
-		return nil
-	}
-
-	p.release()
-	p.mu.Unlock()
-	return c.Close()
+func (pc *poolConn) Err() error {
+	return pc.c.Err()
+}
+func (pc *poolConn) Pub(topic string, message []byte) error {
+	return pc.c.Pub(topic, message)
 }
 
-type errorConnection struct {
-	err      error
-	idleTime time.Time
+type errorConn struct {
+	err error
 }
 
-func (ec errorConnection) Post([]byte, ...interface{}) (interface{}, error) { return nil, ec.err }
-func (ec errorConnection) Send([]byte, ...interface{}) error                { return ec.err }
-func (ec errorConnection) Err() error                                       { return ec.err }
-func (ec errorConnection) Close() error                                     { return ec.err }
-func (ec errorConnection) Flush() error                                     { return ec.err }
-func (ec errorConnection) Receive() (interface{}, error)                    { return nil, ec.err }
-func (ec errorConnection) MarkIdleTime()                                    { ec.idleTime = nowFunc() }
-func (ec errorConnection) GetIdleTime() time.Time                           { return ec.idleTime }
+func (ec errorConn) Close() error                           { return ec.err }
+func (ec errorConn) Err() error                             { return ec.err }
+func (ec errorConn) Pub(topic string, message []byte) error { return ec.err }
+
+type idleList struct {
+	count       int
+	front, back *poolConn
+}
+
+func (l *idleList) pushFront(pc *poolConn) {
+	pc.next = l.front
+	pc.prev = nil
+	if l.count == 0 {
+		l.back = pc
+	} else {
+		l.front.prev = pc
+	}
+	l.front = pc
+	l.count++
+	return
+}
+
+func (l *idleList) popFront() {
+	pc := l.front
+	l.count--
+	if l.count == 0 {
+		l.front, l.back = nil, nil
+	} else {
+		pc.next.prev = nil
+		l.front = pc.next
+	}
+	pc.next, pc.prev = nil, nil
+}
+
+func (l *idleList) popBack() {
+	pc := l.back
+	l.count--
+	if l.count == 0 {
+		l.front, l.back = nil, nil
+	} else {
+		pc.prev.next = nil
+		l.back = pc.prev
+	}
+	pc.next, pc.prev = nil, nil
+}
