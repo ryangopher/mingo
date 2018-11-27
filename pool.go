@@ -154,7 +154,7 @@ type Pool struct {
 func (p *Pool) Get() Conn {
 	pc, err := p.get(nil)
 	if err != nil {
-		return errorConn{err}
+		return &ErrorConn{err}
 	}
 	return pc
 }
@@ -364,13 +364,13 @@ func (pc *poolConn) Pub(topic string, message []byte) error {
 	return pc.c.Pub(topic, message)
 }
 
-type errorConn struct {
-	err error
+type ErrorConn struct {
+	Error error
 }
 
-func (ec errorConn) Close() error                           { return ec.err }
-func (ec errorConn) Err() error                             { return ec.err }
-func (ec errorConn) Pub(topic string, message []byte) error { return ec.err }
+func (ec *ErrorConn) Close() error                           { return ec.Error }
+func (ec *ErrorConn) Err() error                             { return ec.Error }
+func (ec *ErrorConn) Pub(topic string, message []byte) error { return ec.Error }
 
 type idleList struct {
 	count       int
